@@ -23,6 +23,14 @@ streamlit run app.py
 
 `ingest.py` only needs to run once, or again if the PDFs change.
 
+## Evaluation
+
+```
+python evaluate.py final
+```
+
+Checks the red-flag filter, retrieval and refusals on the 45 questions in `eval_questions.csv` (no LLM calls) and saves the numbers to `results.csv`.
+
 ## Disclaimer
 
 This is a student project. It is not medical advice and does not replace a doctor.

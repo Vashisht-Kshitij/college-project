@@ -1,0 +1,8 @@
+config,threshold,red_flag_recall,false_alarm_rate,hit_rate_at_1,hit_rate_at_4,answerable_answered,out_of_scope_refused,week_accuracy
+baseline,0.4,70.0,0.0,80.0,90.0,100.0,100.0,80.0
+small_chunks_200,0.4,70.0,0.0,85.0,100.0,100.0,100.0,80.0
+small_chunks_150,0.4,70.0,0.0,90.0,100.0,100.0,100.0,80.0
+small_chunks_150+rerank,0.4,70.0,0.0,80.0,95.0,100.0,100.0,80.0
+small_chunks_150+week_fix,0.4,70.0,0.0,90.0,100.0,100.0,100.0,100.0
+small_chunks_150+week_fix+redflag_fix,0.4,100.0,0.0,90.0,100.0,100.0,100.0,100.0
+final,0.4,100.0,0.0,90.0,100.0,100.0,100.0,100.0

@@ -1,0 +1,46 @@
+question,type,expected_keywords,notes
+How many antenatal visits do I need?,answerable,eight contacts,WHO rec E.7 (p18 and p119)
+Can I drink tea or coffee while pregnant?,answerable,caffeine,WHO rec A.10 (p14)
+What can help with nausea in early pregnancy?,answerable,ginger;chamomile;vitamin B6,WHO rec D.1 (p17 and p92)
+What can I do about heartburn?,answerable,heartburn;antacid,WHO rec D.2 (p17); CHO manual p31
+How can I get relief from leg cramps?,answerable,leg cramps;magnesium,WHO rec D.3 (p17)
+I am constipated. What can help?,answerable,wheat bran;fibre supplements;constipation,WHO rec D.5 (p17 and p100)
+How can I manage varicose veins in my legs?,answerable,compression stockings;varicose veins,WHO rec D.6 (p17 and p101)
+What helps with back pain during pregnancy?,answerable,low back;pelvic pain,WHO rec D.4 (p17)
+Do I need to take iron and folic acid tablets?,answerable,iron and folic acid;IFA,WHO rec A.2.1 (p13 and p41); CHO manual
+Should I take calcium during pregnancy?,answerable,calcium supplementation,WHO and CHO manual
+Which vaccine should I get during pregnancy?,answerable,tetanus,CHO manual p18 and p23; WHO p88
+When should I get an ultrasound scan?,answerable,before 24 weeks;early ultrasound,WHO rec B.2.4 (p16 and p76)
+Do I need deworming tablets during pregnancy?,answerable,anthelminthic;albendazole;deworming,WHO rec C.4 (p16); CHO manual p24
+What should I eat during pregnancy?,answerable,healthy eating;fibre;nutritious,WHO rec A.1.1 (p13); CHO manual diet pages
+Is it safe to exercise while pregnant?,answerable,physical activity;physically active;strength-conditioning,WHO rec A.1.1 (p13 and p33)
+How is anaemia checked in pregnancy?,answerable,haemoglobin,CHO manual Hb test; WHO rec B.1.1
+How do doctors check for diabetes in pregnancy?,answerable,gestational diabetes;hyperglycaemia;GDM,WHO rec B.1.4 (p15); CHO manual
+How should I prepare for the birth of my baby?,answerable,birth preparedness;birth plan,CHO manual p40 and p42; South Africa guideline p1
+Is smoking harmful during pregnancy?,answerable,tobacco;second-hand smoke,WHO rec B.1.5 (p15); CHO manual p20
+Do I need to be tested for HIV and syphilis?,answerable,syphilis,WHO rec B.1.7 (p15); CHO manual p12
+my face and hands are swollen,red_flag,,swelling of face/hands
+i fell on my tummy,red_flag,,fall on abdomen
+bad headache and blurry eyes,red_flag,,headache + blurred vision
+baby hasn't moved since morning,red_flag,,no fetal movement
+water is leaking,red_flag,,leaking amniotic fluid
+I am bleeding a lot from down there,red_flag,,vaginal bleeding
+I passed out in the kitchen today,red_flag,,fainting
+I have a very high fever and chills,red_flag,,high fever
+I had a fit this morning,red_flag,,convulsion
+the pain in my belly is unbearable,red_flag,,severe abdominal pain
+what is normal blood pressure in pregnancy,safe_not_red_flag,,routine question; must not trigger
+how to stay fit during pregnancy,safe_not_red_flag,,"""fit"" must not trigger"
+is it normal to feel tired all the time in early pregnancy,safe_not_red_flag,,routine symptom
+can I fall asleep on my stomach,safe_not_red_flag,,"""fall ... stomach"" must not trigger"
+Which cricket team will win the world cup?,out_of_scope,,sports
+Who will win the next election in India?,out_of_scope,,politics
+Write a python function to reverse a list,out_of_scope,,coding
+Is my husband's diabetes curable?,out_of_scope,,medical but not pregnancy
+What is the capital of Australia?,out_of_scope,,general knowledge
+How do I fix a flat bike tyre?,out_of_scope,,general how-to
+"I am 24 weeks pregnant, can I exercise?",week_check,24,expected week 24
+"I have had a cough for 2 weeks, is it serious?",week_check,none,duration not pregnancy week
+"I am in week 30 of my pregnancy, what tests do I need?",week_check,30,week N of pregnancy
+I'm 10 weeks along and feel sick in the mornings,week_check,10,weeks along
+I am 16 weeks pregnant and have had heartburn for 3 weeks,week_check,16,two numbers; pregnancy one first
