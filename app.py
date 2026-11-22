@@ -1,4 +1,6 @@
 # Streamlit chat UI and the main question -> answer flow
+from datetime import date, timedelta
+
 import chromadb
 import streamlit as st
 from dotenv import load_dotenv
@@ -119,6 +121,54 @@ def get_response(question, sidebar_week):
     return f"{answer}\n\n{format_sources(chunks)}", chunks, f"Answered from {len(chunks)} evidence chunks"
 
 
+def pregnancy_from_lmp(lmp, today):
+    # Naegele's rule: due date = first day of last period (LMP) + 280 days (40 weeks)
+    days = (today - lmp).days
+    if days < 0:
+        return None, "future"
+    if days > 42 * 7:
+        return None, "too_old"
+    info = {"days_pregnant": days, "week": days // 7, "days": days % 7, "due": lmp + timedelta(days=280)}
+    info["trimester"] = get_trimester(info["week"])
+    return info, None
+
+
+DATE_ERRORS = {
+    ("lmp", "future"): "That date is in the future 🙂 Please pick the first day of your last period.",
+    ("lmp", "too_old"): "That is more than 42 weeks ago. Please check the date, or ask your doctor.",
+    ("due", "future"): "That due date is more than 40 weeks away. Please check the date.",
+    ("due", "too_old"): "That due date was more than 2 weeks ago. Please check the date, or ask your doctor.",
+}
+
+
+def due_date_sidebar():
+    # sidebar card; returns the current pregnancy week for retrieval (or None)
+    st.sidebar.subheader("🗓️ Expected due date")
+    mode = st.sidebar.radio("I know", ["First day of last period (LMP)", "I know my due date"])
+    if mode == "I know my due date":
+        due = st.sidebar.date_input("Due date", value=None, format="DD/MM/YYYY")
+        lmp, kind = (due - timedelta(days=280) if due else None), "due"
+    else:
+        lmp = st.sidebar.date_input("First day of last period (LMP)", value=None, format="DD/MM/YYYY")
+        kind = "lmp"
+    if not lmp:
+        st.sidebar.caption("Pick a date to see your due date and week.")
+        return None
+
+    info, error = pregnancy_from_lmp(lmp, date.today())
+    if error:
+        st.sidebar.warning(DATE_ERRORS[(kind, error)])
+        return None
+
+    to_go = 280 - info["days_pregnant"]
+    st.sidebar.markdown(f"**Due date:** {info['due']:%d %B %Y}")
+    st.sidebar.markdown(f"**You are:** {info['week']} weeks {info['days']} days ({info['trimester']} trimester)")
+    st.sidebar.markdown(f"**Days to go:** {to_go}" if to_go >= 0 else f"**Past due date by** {-to_go} days")
+    st.sidebar.progress(min(info["days_pregnant"] / 280, 1.0), text=f"{info['days_pregnant'] * 100 // 280}% of 40 weeks")
+    st.sidebar.caption("Estimated using Naegele's rule; your doctor's ultrasound date is more accurate.")
+    return info["week"] or None
+
+
 def show_message(message):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -139,7 +189,7 @@ if __name__ == "__main__":
         "It is not a doctor and does not replace medical advice. In an emergency, call 108."
     )
 
-    sidebar_week = st.sidebar.number_input("Pregnancy week (optional, 0 = not set)", min_value=0, max_value=42, value=0)
+    sidebar_week = due_date_sidebar()  # a week written in the question still wins (see find_evidence)
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
