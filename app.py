@@ -1,4 +1,7 @@
 # Streamlit chat UI and the main question -> answer flow
+import os
+import re
+import time
 from datetime import date, timedelta
 from urllib.parse import quote
 
@@ -15,12 +18,15 @@ load_dotenv()
 GROQ_MODEL = "openai/gpt-oss-20b"
 TOP_K = 4
 SIMILARITY_THRESHOLD = 0.40
+# a sentence of the answer is "supported" if it is at least this similar to one of the 4 chunks
+# (picked on real answers vs made-up sentences; see the report)
+GROUNDING_CUTOFF = 0.58
 SOURCE_NAMES = {
     "who_pregenant_woman.pdf": "WHO ANC Recommendations (2016)",
     "Care During Pregnancy and Childbirth Training Manual for CHO at AB-HWC.pdf": "MoHFW CHO Training Manual (2021)",
     "zaf-mn-21-01-guideline-2017-eng-principles-of-good-care---guidelines.pdf": "South Africa Maternity Care Guidelines (2017)",
 }
-NOT_ENOUGH_INFO ="I don't have enough verified information on this in my knowledge base. Please consult your doctor."
+NOT_ENOUGH_INFO = "I don't have enough verified information on this in my knowledge base. Please consult your doctor."
 
 SYSTEM_PROMPT = """You are PregnaCare AI, a pregnancy information assistant.
 
@@ -78,6 +84,7 @@ def best_score(chunks):
 
 
 def ask_llm(question, trimester, chunks):
+    # returns the answer text and the token usage reported by Groq
     evidence = "\n\n".join(f"[{c['source']}, page {c['page']}]\n{c['text']}" for c in chunks)
     stage = f"The user is in the {trimester} trimester.\n\n" if trimester else ""
     response = Groq().chat.completions.create(
@@ -89,12 +96,44 @@ def ask_llm(question, trimester, chunks):
             {"role": "user", "content": f"{stage}Evidence:\n{evidence}\n\nQuestion: {question}\n\n{REMINDER}"},
         ],
     )
-    return response.choices[0].message.content
+    return response.choices[0].message.content, response.usage
 
 
 def format_sources(chunks):
     sources = dict.fromkeys(f"- {source_link(c)}" for c in chunks)  # removes duplicates
     return "**Sources:**\n" + "\n".join(sources)
+
+
+def answer_sentences(answer):
+    # sentences of the answer, leaving out the "When to see a doctor" part and the markdown
+    text = answer.split("**When to see a doctor:**")[0].replace("**Answer:**", "")
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text.replace("**", ""))
+    return [p.strip(" -•") for p in parts if len(p.split()) >= 3]
+
+
+def grounding_check(answer, chunks):
+    # no extra LLM call: compare each answer sentence with the 4 chunks using the same MiniLM model
+    sentences = answer_sentences(answer)
+    if not sentences:
+        return 100.0, []
+    model = load_resources()[0]
+    sentence_vectors = model.encode(sentences, normalize_embeddings=True)
+    chunk_vectors = model.encode([c["text"] for c in chunks], normalize_embeddings=True)
+    best = (sentence_vectors @ chunk_vectors.T).max(axis=1)  # best cosine similarity per sentence
+    unsupported = [(s, float(b)) for s, b in zip(sentences, best) if b < GROUNDING_CUTOFF]
+    return 100 * (len(sentences) - len(unsupported)) / len(sentences), unsupported
+
+
+def confidence_score(best_similarity, grounding):
+    # confidence = 50% "did we find good evidence" + 50% "does the answer stick to it"
+    #   retrieval part: 0 at the refusal threshold (0.40), 100 at a strong match (0.70 or more), linear in between
+    #   grounding part: the grounding % from grounding_check
+    # label: High >= 75, Medium >= 50, else Low; and always Low if under half of the sentences are supported
+    retrieval = min(max((best_similarity - SIMILARITY_THRESHOLD) / (0.70 - SIMILARITY_THRESHOLD), 0), 1) * 100
+    score = 0.5 * retrieval + 0.5 * grounding
+    if score >= 75 and grounding >= 50:
+        return score, "High"
+    return score, ("Medium" if score >= 50 and grounding >= 50 else "Low")
 
 
 def find_evidence(question, sidebar_week):
@@ -110,23 +149,39 @@ def find_evidence(question, sidebar_week):
 
 
 def get_response(question, sidebar_week):
-    # returns the answer, the evidence chunks and a caption saying which path ran
+    # returns the assistant message: answer, evidence chunks, a caption saying which path ran, and metrics
+    start = time.perf_counter()
     path, trimester, chunks = find_evidence(question, sidebar_week)
-    if path == "red_flag":
-        return ESCALATION_MESSAGE, [], "Red-flag escalation"
-    if path == "refused":
-        return NOT_ENOUGH_INFO, chunks, f"Refused: not enough evidence (best score {best_score(chunks):.2f})"
+    metrics = {"retrieval_ms": (time.perf_counter() - start) * 1000}
+    message = {"role": "assistant", "chunks": chunks, "metrics": metrics}
 
+    def finish(content, caption):
+        metrics["total_s"] = time.perf_counter() - start
+        return {**message, "content": content, "caption": caption}
+
+    if path == "red_flag":
+        return finish(ESCALATION_MESSAGE, "Red-flag escalation")
+    if path == "refused":
+        return finish(NOT_ENOUGH_INFO, f"Refused: not enough evidence (best score {best_score(chunks):.2f})")
+
+    llm_start = time.perf_counter()
     try:
-        answer = ask_llm(question, trimester, chunks)
+        answer, usage = ask_llm(question, trimester, chunks)
     except Exception as e:
-        return f"Could not reach the AI service, please try again. ({e})", chunks, "LLM call failed"
+        return finish(f"Could not reach the AI service, please try again. ({e})", "LLM call failed")
+    metrics["llm_s"] = time.perf_counter() - llm_start
+    metrics["tokens"] = (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
 
     if not answer:
-        return "I could not generate an answer, please try again.", chunks, "LLM returned no answer"
+        return finish("I could not generate an answer, please try again.", "LLM returned no answer")
     if not is_safe_answer(answer):
-        return SAFE_MESSAGE, chunks, "Answer blocked by safety validation"
-    return f"{answer}\n\n{format_sources(chunks)}", chunks, f"Answered from {len(chunks)} evidence chunks"
+        return finish(SAFE_MESSAGE, "Answer blocked by safety validation")
+
+    grounding, unsupported = grounding_check(answer, chunks)
+    confidence, level = confidence_score(best_score(chunks), grounding)
+    metrics.update(grounding=grounding, hallucination=100 - grounding, unsupported=unsupported,
+                   confidence=confidence, level=level)
+    return finish(f"{answer}\n\n{format_sources(chunks)}", f"Answered from {len(chunks)} evidence chunks")
 
 
 def pregnancy_from_lmp(lmp, today):
@@ -177,16 +232,72 @@ def due_date_sidebar():
     return info["week"] or None
 
 
+def show_metrics(m):
+    with st.expander("Answer metrics"):
+        lines = [f"- Retrieval time: {m['retrieval_ms']:.0f} ms"]
+        if "llm_s" in m:
+            prompt, completion, total = m["tokens"]
+            lines += [f"- LLM time: {m['llm_s']:.1f} s", f"- Tokens: {prompt} in + {completion} out = {total}"]
+        lines.append(f"- Total time: {m['total_s']:.1f} s")
+        if "grounding" in m:
+            lines += [f"- Grounding: {m['grounding']:.0f}% of sentences supported by the evidence",
+                      f"- Hallucination score: {m['hallucination']:.0f}",
+                      f"- Confidence: {m['confidence']:.0f}% ({m['level']})"]
+        st.markdown("\n".join(lines))
+        if m.get("unsupported"):
+            st.markdown("**Sentences not clearly supported by the evidence:**")
+            for sentence, score in m["unsupported"]:
+                st.markdown(f"- {sentence} *(best match {score:.2f})*")
+
+
 def show_message(message):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message.get("caption"):
-            st.caption(message["caption"])
+            level = message.get("metrics", {}).get("level")
+            confidence = f" · Confidence {message['metrics']['confidence']:.0f}% ({level})" if level else ""
+            st.caption(message["caption"] + confidence)
         if message.get("chunks"):
             with st.expander("Retrieved evidence"):
                 for c in message["chunks"]:
                     st.markdown(f"**{source_link(c)}** (similarity {c['similarity']:.2f})")
                     st.text(c["text"])
+        if message.get("metrics"):
+            show_metrics(message["metrics"])
+
+
+def performance_tab():
+    import altair as alt
+    import pandas as pd
+
+    st.subheader("Retrieval and safety: baseline vs final")
+    results = pd.read_csv("results.csv")
+    pair = results[results["config"].isin(["baseline", "final"])].drop(columns="threshold")
+    pair = pair.melt(id_vars="config", var_name="metric", value_name="percent")
+    chart = alt.Chart(pair).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+        x=alt.X("metric:N", title=None, sort=None, axis=alt.Axis(labelAngle=-30)),
+        xOffset=alt.XOffset("config:N", sort=["baseline", "final"]),
+        y=alt.Y("percent:Q", title="%", scale=alt.Scale(domain=[0, 100])),
+        color=alt.Color("config:N", title=None, legend=alt.Legend(orient="top"),
+                        scale=alt.Scale(domain=["baseline", "final"], range=["#2a78d6", "#eb6834"])),
+        tooltip=["config", "metric", "percent"],
+    )
+    st.altair_chart(chart, width="stretch")
+    st.caption("Higher is better for every metric except false_alarm_rate. All configs:")
+    st.dataframe(results, hide_index=True)
+
+    st.subheader("Answer quality (real LLM, 10 questions)")
+    if not os.path.exists("answer_results.csv"):
+        st.info("Run `python evaluate.py --llm` to create answer_results.csv.")
+        return
+    answers = pd.read_csv("answer_results.csv")
+    answered = answers.dropna(subset=["grounding"])
+    cols = st.columns(4)
+    cols[0].metric("Avg grounding", f"{answered['grounding'].mean():.0f}%")
+    cols[1].metric("Avg hallucination", f"{answered['hallucination'].mean():.0f}")
+    cols[2].metric("Keyword in answer", f"{answers['keyword_found'].mean() * 100:.0f}%")
+    cols[3].metric("Avg latency", f"{answers['total_s'].mean():.1f} s")
+    st.dataframe(answers, hide_index=True)
 
 
 # streamlit runs this file as __main__; the check lets evaluate.py import the functions above
@@ -196,22 +307,24 @@ if __name__ == "__main__":
         "This chatbot gives general information from WHO and government antenatal guidelines. "
         "It is not a doctor and does not replace medical advice. In an emergency, call 108."
     )
-
     sidebar_week = due_date_sidebar()  # a week written in the question still wins (see find_evidence)
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    chat_tab, performance = st.tabs(["💬 Chat", "📊 Performance"])
+    with performance:
+        performance_tab()
 
-    for message in st.session_state.messages:
-        show_message(message)
+    with chat_tab:
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
-    if question := st.chat_input("Ask a question about your pregnancy"):
-        st.session_state.messages.append({"role": "user", "content": question})
-        show_message(st.session_state.messages[-1])
+        for message in st.session_state.messages:
+            show_message(message)
 
-        with st.spinner("Checking the guidelines..."):
-            answer, chunks, caption = get_response(question, sidebar_week)
+        if question := st.chat_input("Ask a question about your pregnancy"):
+            st.session_state.messages.append({"role": "user", "content": question})
+            show_message(st.session_state.messages[-1])
 
-        message = {"role": "assistant", "content": answer, "chunks": chunks, "caption": caption}
-        st.session_state.messages.append(message)
-        show_message(st.session_state.messages[-1])
+            with st.spinner("Checking the guidelines..."):
+                message = get_response(question, sidebar_week)
+            st.session_state.messages.append(message)
+            show_message(message)
