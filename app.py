@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 from groq import Groq
 from sentence_transformers import SentenceTransformer
 
-from safety import ESCALATION_MESSAGE, SAFE_MESSAGE, get_trimester, get_week, is_red_flag, is_safe_answer
+from safety import (ESCALATION_MESSAGE, LOCAL_MESSAGES, SAFE_MESSAGE, get_trimester, get_week, is_red_flag,
+                    is_safe_answer)
 
 load_dotenv()
 
@@ -27,6 +28,8 @@ SOURCE_NAMES = {
     "zaf-mn-21-01-guideline-2017-eng-principles-of-good-care---guidelines.pdf": "South Africa Maternity Care Guidelines (2017)",
 }
 NOT_ENOUGH_INFO = "I don't have enough verified information on this in my knowledge base. Please consult your doctor."
+LANGUAGES = {"English": "en", "हिन्दी (Hindi)": "hi", "বাংলা (Bengali)": "bn"}
+LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "bn": "Bengali"}
 AVATARS = {"user": "🤰", "assistant": "🩺"}
 BADGE_COLORS = {"High": "green", "Medium": "orange", "Low": "red"}
 
@@ -128,6 +131,30 @@ def ask_llm(question, trimester, chunks):
     return response.choices[0].message.content, response.usage
 
 
+def translate(text, language):
+    # one short Groq call; keeps the markdown (**bold**, bullet points) and numbers
+    response = Groq().chat.completions.create(
+        model=GROQ_MODEL,
+        temperature=0,
+        reasoning_effort="low",
+        messages=[
+            {"role": "system", "content": f"Translate the user's text into {language}. Keep the meaning exact. "
+                                          "Keep markdown like **bold** and bullet points, and keep numbers. "
+                                          "Reply with the translation only."},
+            {"role": "user", "content": text},
+        ],
+    )
+    return response.choices[0].message.content, response.usage
+
+
+def fixed_message(key, english, lang):
+    # safety messages use fixed translations; the 108 message is shown in both languages
+    if lang == "en":
+        return english
+    local = LOCAL_MESSAGES[lang][key]
+    return f"{local}\n\n---\n\n{english}" if key == "escalation" else local
+
+
 def format_sources(chunks):
     sources = dict.fromkeys(f"- {source_link(c)}" for c in chunks)  # removes duplicates
     return "**Sources:**\n" + "\n".join(sources)
@@ -177,40 +204,75 @@ def find_evidence(question, sidebar_week):
     return path, trimester, chunks
 
 
-def get_response(question, sidebar_week):
+def get_response(question, sidebar_week, lang="en"):
     # returns the assistant message: answer, evidence chunks, a caption saying which path ran, and metrics
+    # Hindi/Bengali: red flag on the original text -> translate to English -> normal English flow
+    #                (red flag again, retrieval, answer, validator) -> translate the checked answer back
     start = time.perf_counter()
-    path, trimester, chunks = find_evidence(question, sidebar_week)
-    metrics = {"retrieval_ms": (time.perf_counter() - start) * 1000}
-    message = {"role": "assistant", "chunks": chunks, "metrics": metrics}
+    metrics = {}
+    message = {"role": "assistant", "chunks": [], "metrics": metrics}
 
     def finish(content, caption):
         metrics["total_s"] = time.perf_counter() - start
         return {**message, "content": content, "caption": caption}
 
-    if path == "red_flag":
-        return finish(ESCALATION_MESSAGE, "Red-flag escalation")
-    if path == "refused":
-        return finish(NOT_ENOUGH_INFO, f"Refused: not enough evidence (best score {best_score(chunks):.2f})")
+    def add_translation(usage, seconds):
+        metrics["translate_s"] = metrics.get("translate_s", 0) + seconds
+        metrics["translate_tokens"] = metrics.get("translate_tokens", 0) + usage.total_tokens
 
-    llm_start = time.perf_counter()
+    english = question
+    if lang != "en":
+        if is_red_flag(question):  # danger words in Hindi/Bengali/Hinglish, before any AI call
+            metrics["retrieval_ms"] = (time.perf_counter() - start) * 1000
+            return finish(fixed_message("escalation", ESCALATION_MESSAGE, lang), "Red-flag escalation")
+        t = time.perf_counter()
+        try:
+            english, usage = translate(question, "English")
+        except Exception as e:
+            return finish(f"Could not reach the AI service, please try again. ({e})", "Translation failed")
+        add_translation(usage, time.perf_counter() - t)
+        message["english_question"] = english
+
+    t = time.perf_counter()
+    path, trimester, chunks = find_evidence(english, sidebar_week)  # runs the red-flag check on the English text
+    metrics["retrieval_ms"] = (time.perf_counter() - t) * 1000
+    message["chunks"] = chunks
+
+    if path == "red_flag":
+        return finish(fixed_message("escalation", ESCALATION_MESSAGE, lang), "Red-flag escalation")
+    if path == "refused":
+        return finish(fixed_message("not_enough", NOT_ENOUGH_INFO, lang),
+                      f"Refused: not enough evidence (best score {best_score(chunks):.2f})")
+
+    t = time.perf_counter()
     try:
-        answer, usage = ask_llm(question, trimester, chunks)
+        answer, usage = ask_llm(english, trimester, chunks)
     except Exception as e:
         return finish(f"Could not reach the AI service, please try again. ({e})", "LLM call failed")
-    metrics["llm_s"] = time.perf_counter() - llm_start
+    metrics["llm_s"] = time.perf_counter() - t
     metrics["tokens"] = (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
 
     if not answer:
         return finish("I could not generate an answer, please try again.", "LLM returned no answer")
-    if not is_safe_answer(answer):
-        return finish(SAFE_MESSAGE, "Answer blocked by safety validation")
+    if not is_safe_answer(answer):  # always checked on the English answer
+        return finish(fixed_message("safe", SAFE_MESSAGE, lang), "Answer blocked by safety validation")
 
-    grounding, unsupported = grounding_check(answer, chunks)
+    grounding, unsupported = grounding_check(answer, chunks)  # scores also use the English answer
     confidence, level = confidence_score(best_score(chunks), grounding)
     metrics.update(grounding=grounding, hallucination=100 - grounding, unsupported=unsupported,
                    confidence=confidence, level=level)
-    return finish(f"{answer}\n\n{format_sources(chunks)}", f"Answered from {len(chunks)} evidence chunks")
+    caption = f"Answered from {len(chunks)} evidence chunks"
+
+    if lang != "en":
+        message["english_answer"] = answer
+        t = time.perf_counter()
+        try:
+            answer, usage = translate(answer, LANGUAGE_NAMES[lang])
+            add_translation(usage, time.perf_counter() - t)
+            caption += f" (translated to {LANGUAGE_NAMES[lang]})"
+        except Exception:
+            caption += " (translation failed, showing English)"
+    return finish(f"{answer}\n\n{format_sources(chunks)}", caption)
 
 
 def pregnancy_from_lmp(lmp, today):
@@ -261,12 +323,15 @@ def due_date_sidebar():
     return info["week"] or None
 
 
-def show_metrics(m):
+def show_metrics(message):
+    m = message["metrics"]
     with st.expander("Answer metrics"):
-        lines = [f"- Retrieval time: {m['retrieval_ms']:.0f} ms"]
+        lines = [f"- Retrieval time: {m['retrieval_ms']:.0f} ms"] if "retrieval_ms" in m else []
         if "llm_s" in m:
             prompt, completion, total = m["tokens"]
             lines += [f"- LLM time: {m['llm_s']:.1f} s", f"- Tokens: {prompt} in + {completion} out = {total}"]
+        if "translate_s" in m:
+            lines.append(f"- Translation: {m['translate_s']:.1f} s, {m['translate_tokens']} tokens")
         lines.append(f"- Total time: {m['total_s']:.1f} s")
         if "grounding" in m:
             lines += [f"- Grounding: {m['grounding']:.0f}% of sentences supported by the evidence",
@@ -277,6 +342,11 @@ def show_metrics(m):
             st.markdown("**Sentences not clearly supported by the evidence:**")
             for sentence, score in m["unsupported"]:
                 st.markdown(f"- {sentence} *(best match {score:.2f})*")
+        if message.get("english_question"):
+            st.markdown(f"**Question in English:** {message['english_question']}")
+        if message.get("english_answer"):
+            st.markdown("**English answer (the scores are computed on this):**")
+            st.markdown(message["english_answer"])
 
 
 def show_message(message):
@@ -296,7 +366,7 @@ def show_message(message):
                     st.markdown(f"**{source_link(c)}** (similarity {c['similarity']:.2f})")
                     st.text(c["text"])
         if message.get("metrics"):
-            show_metrics(message["metrics"])
+            show_metrics(message)
 
 
 def performance_tab():
@@ -344,6 +414,7 @@ if __name__ == "__main__":
         "This chatbot gives general information from WHO and government antenatal guidelines. "
         "It is not a doctor and does not replace medical advice. In an emergency, call 108."
     )
+    lang = LANGUAGES[st.sidebar.selectbox("🌐 Language / भाषा / ভাষা", list(LANGUAGES))]
     sidebar_week = due_date_sidebar()  # a week written in the question still wins (see find_evidence)
 
     chat_tab, performance = st.tabs(["💬 Chat", "📊 Performance"])
@@ -355,7 +426,8 @@ if __name__ == "__main__":
             st.session_state.messages = []
 
         with st.chat_message("assistant", avatar="🌸"):
-            st.markdown("Hello mom-to-be 💕 Ask me anything about your pregnancy.")
+            welcome = "Hello mom-to-be 💕 Ask me anything about your pregnancy."
+            st.markdown(welcome if lang == "en" else LOCAL_MESSAGES[lang]["welcome"])
         for message in st.session_state.messages:
             show_message(message)
 
@@ -364,6 +436,6 @@ if __name__ == "__main__":
             show_message(st.session_state.messages[-1])
 
             with st.spinner("Checking the guidelines..."):
-                message = get_response(question, sidebar_week)
+                message = get_response(question, sidebar_week, lang)
             st.session_state.messages.append(message)
             show_message(message)
