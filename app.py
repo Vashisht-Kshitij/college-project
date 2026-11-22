@@ -452,9 +452,7 @@ if __name__ == "__main__":
         with st.chat_message("assistant", avatar="🌸"):
             welcome = "Hello mom-to-be 💕 Ask me anything about your pregnancy."
             st.markdown(welcome if lang == "en" else LOCAL_MESSAGES[lang]["welcome"])
-        for i, message in enumerate(st.session_state.messages):
-            show_message(message, i)
-
+        history = st.container()  # drawn above the inputs, so new messages appear above them too
         # voice question: only transcribe a recording once (streamlit reruns the script on every click)
         voice = st.audio_input("🎤 Or ask by voice")
         question = st.chat_input("Ask a question about your pregnancy")
@@ -465,11 +463,14 @@ if __name__ == "__main__":
             except Exception:
                 st.warning("Sorry, I couldn't hear that clearly. Please try again, or type your question. 🙏")
 
-        if question:
-            st.session_state.messages.append({"role": "user", "content": question})
-            show_message(st.session_state.messages[-1], len(st.session_state.messages) - 1)
+        with history:
+            for i, message in enumerate(st.session_state.messages):
+                show_message(message, i)
+            if question:
+                st.session_state.messages.append({"role": "user", "content": question})
+                show_message(st.session_state.messages[-1], len(st.session_state.messages) - 1)
 
-            with st.spinner("Checking the guidelines..."):
-                message = get_response(question, sidebar_week, lang)
-            st.session_state.messages.append(message)
-            show_message(message, len(st.session_state.messages) - 1)
+                with st.spinner("Checking the guidelines..."):
+                    message = get_response(question, sidebar_week, lang)
+                st.session_state.messages.append(message)
+                show_message(message, len(st.session_state.messages) - 1)
