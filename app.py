@@ -27,6 +27,35 @@ SOURCE_NAMES = {
     "zaf-mn-21-01-guideline-2017-eng-principles-of-good-care---guidelines.pdf": "South Africa Maternity Care Guidelines (2017)",
 }
 NOT_ENOUGH_INFO = "I don't have enough verified information on this in my knowledge base. Please consult your doctor."
+AVATARS = {"user": "🤰", "assistant": "🩺"}
+BADGE_COLORS = {"High": "green", "Medium": "orange", "Low": "red"}
+
+# soft rounded chat bubbles + a small header animation (switched off for people who prefer reduced motion)
+PAGE_CSS = """
+<style>
+[data-testid="stChatMessage"] {background: #ffffff; border-radius: 18px; padding: 0.8rem 1rem;
+    box-shadow: 0 2px 10px rgba(201, 85, 122, 0.12); margin-bottom: 0.6rem;}
+[data-testid="stSidebar"] {background: linear-gradient(180deg, #fde8e4, #fff3ea);}
+[data-testid="stChatInput"] textarea {border-radius: 14px;}
+.pc-header {text-align: center; margin-top: -1rem;}
+.pc-title {font-size: 2.2rem; font-weight: 700; color: #b0466c;}
+.pc-sub {color: #7a6066; font-size: 0.95rem;}
+.pc-heart {display: inline-block; animation: pc-beat 1.6s ease-in-out infinite;}
+.pc-track {position: relative; height: 34px; max-width: 420px; margin: 0.2rem auto 0.8rem;
+    border-bottom: 2px dashed #f2b8c6;}
+.pc-baby {position: absolute; bottom: 2px; left: 0; font-size: 1.5rem;
+    animation: pc-crawl 14s ease-in-out infinite alternate;}
+@keyframes pc-beat {0%, 100% {transform: scale(1);} 15% {transform: scale(1.18);} 30% {transform: scale(1);}
+    45% {transform: scale(1.12);}}
+@keyframes pc-crawl {from {left: 0;} to {left: calc(100% - 2rem);}}
+@media (prefers-reduced-motion: reduce) {.pc-heart, .pc-baby {animation: none;}}
+</style>
+<div class="pc-header">
+  <div class="pc-title">PregnaCare AI <span class="pc-heart">💗</span></div>
+  <div class="pc-sub">Caring, evidence-based pregnancy guidance from WHO and MoHFW guidelines</div>
+  <div class="pc-track"><span class="pc-baby">👶</span></div>
+</div>
+"""
 
 SYSTEM_PROMPT = """You are PregnaCare AI, a pregnancy information assistant.
 
@@ -251,12 +280,16 @@ def show_metrics(m):
 
 
 def show_message(message):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    with st.chat_message(message["role"], avatar=AVATARS[message["role"]]):
+        if message.get("caption") == "Red-flag escalation":
+            st.error(message["content"])  # the emergency message stays in a plain red box
+        else:
+            st.markdown(message["content"])
+        level = message.get("metrics", {}).get("level")
+        if level:
+            st.badge(f"Confidence {message['metrics']['confidence']:.0f}% · {level}", color=BADGE_COLORS[level])
         if message.get("caption"):
-            level = message.get("metrics", {}).get("level")
-            confidence = f" · Confidence {message['metrics']['confidence']:.0f}% ({level})" if level else ""
-            st.caption(message["caption"] + confidence)
+            st.caption(message["caption"])
         if message.get("chunks"):
             with st.expander("Retrieved evidence"):
                 for c in message["chunks"]:
@@ -272,12 +305,15 @@ def performance_tab():
 
     st.subheader("Retrieval and safety: baseline vs final")
     results = pd.read_csv("results.csv")
+    names = {"red_flag_recall": "Red-flag recall", "false_alarm_rate": "False alarms (lower is better)",
+             "hit_rate_at_1": "Hit@1", "hit_rate_at_4": "Hit@4", "answerable_answered": "Answerable answered",
+             "out_of_scope_refused": "Out-of-scope refused", "week_accuracy": "Week accuracy"}
     pair = results[results["config"].isin(["baseline", "final"])].drop(columns="threshold")
-    pair = pair.melt(id_vars="config", var_name="metric", value_name="percent")
-    chart = alt.Chart(pair).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-        x=alt.X("metric:N", title=None, sort=None, axis=alt.Axis(labelAngle=-30)),
-        xOffset=alt.XOffset("config:N", sort=["baseline", "final"]),
-        y=alt.Y("percent:Q", title="%", scale=alt.Scale(domain=[0, 100])),
+    pair = pair.melt(id_vars="config", var_name="metric", value_name="percent").replace({"metric": names})
+    chart = alt.Chart(pair).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+        y=alt.Y("metric:N", title=None, sort=list(names.values()), axis=alt.Axis(labelLimit=220)),
+        yOffset=alt.YOffset("config:N", sort=["baseline", "final"]),
+        x=alt.X("percent:Q", title="%", scale=alt.Scale(domain=[0, 100]), axis=alt.Axis(tickCount=5)),
         color=alt.Color("config:N", title=None, legend=alt.Legend(orient="top"),
                         scale=alt.Scale(domain=["baseline", "final"], range=["#2a78d6", "#eb6834"])),
         tooltip=["config", "metric", "percent"],
@@ -302,7 +338,8 @@ def performance_tab():
 
 # streamlit runs this file as __main__; the check lets evaluate.py import the functions above
 if __name__ == "__main__":
-    st.title("🤰 PregnaCare AI")
+    st.set_page_config(page_title="PregnaCare AI", page_icon="🤰")
+    st.markdown(PAGE_CSS, unsafe_allow_html=True)
     st.warning(
         "This chatbot gives general information from WHO and government antenatal guidelines. "
         "It is not a doctor and does not replace medical advice. In an emergency, call 108."
@@ -317,6 +354,8 @@ if __name__ == "__main__":
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
+        with st.chat_message("assistant", avatar="🌸"):
+            st.markdown("Hello mom-to-be 💕 Ask me anything about your pregnancy.")
         for message in st.session_state.messages:
             show_message(message)
 
