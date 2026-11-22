@@ -1,5 +1,6 @@
 # Streamlit chat UI and the main question -> answer flow
 from datetime import date, timedelta
+from urllib.parse import quote
 
 import chromadb
 import streamlit as st
@@ -60,8 +61,15 @@ def retrieve(question, trimester):
     chunks = []
     for text, meta, distance in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
         source = SOURCE_NAMES.get(meta["source"], meta["source"])
-        chunks.append({"text": text, "source": source, "page": meta["page"], "similarity": 1 - distance})
+        chunks.append({"text": text, "source": source, "file": meta["source"], "page": meta["page"],
+                       "similarity": 1 - distance})
     return chunks
+
+
+def source_link(c):
+    # markdown link that opens the PDF at the first page of the chunk (pages look like "68" or "68-69")
+    first_page = str(c["page"]).split("-")[0]
+    return f"[{c['source']}, page {c['page']}](app/static/{quote(c['file'])}#page={first_page})"
 
 
 def best_score(chunks):
@@ -85,7 +93,7 @@ def ask_llm(question, trimester, chunks):
 
 
 def format_sources(chunks):
-    sources = dict.fromkeys(f"- {c['source']}, page {c['page']}" for c in chunks)  # removes duplicates
+    sources = dict.fromkeys(f"- {source_link(c)}" for c in chunks)  # removes duplicates
     return "**Sources:**\n" + "\n".join(sources)
 
 
@@ -177,7 +185,7 @@ def show_message(message):
         if message.get("chunks"):
             with st.expander("Retrieved evidence"):
                 for c in message["chunks"]:
-                    st.markdown(f"**{c['source']}, page {c['page']}** (similarity {c['similarity']:.2f})")
+                    st.markdown(f"**{source_link(c)}** (similarity {c['similarity']:.2f})")
                     st.text(c["text"])
 
 

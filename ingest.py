@@ -1,6 +1,7 @@
 # Reads the PDFs in data/, chunks them, and saves the embeddings in ChromaDB.
 import os
 import re
+import shutil
 
 import chromadb
 from pypdf import PdfReader
@@ -73,6 +74,9 @@ def main():
     for filename in sorted(f for f in os.listdir(DATA_DIR) if f.lower().endswith(".pdf")):
         chunks = chunk_pdf(os.path.join(DATA_DIR, filename))
         print(f"{filename}: {len(chunks)} chunks")
+        # copy for the clickable source links (streamlit serves static/ at app/static/)
+        os.makedirs("static", exist_ok=True)
+        shutil.copy(os.path.join(DATA_DIR, filename), os.path.join("static", filename))
         if not chunks:
             continue
 

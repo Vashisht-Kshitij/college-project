@@ -1,0 +1,3 @@
+[server]
+# serves files in static/ at app/static/... so source links can open the PDFs
+enableStaticServing = true
