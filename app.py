@@ -1,4 +1,5 @@
 # Streamlit chat UI and the main question -> answer flow
+import io
 import os
 import re
 import time
@@ -147,6 +148,23 @@ def translate(text, language):
     return response.choices[0].message.content, response.usage
 
 
+def transcribe(audio_bytes, lang):
+    # speech to text with Groq Whisper (same API key); the language hint helps with Hindi and Bengali
+    result = Groq().audio.transcriptions.create(file=("question.wav", audio_bytes),
+                                                model="whisper-large-v3-turbo", language=lang)
+    return result.text.strip()
+
+
+def speak(text, lang):
+    # reads the answer aloud with gTTS (needs internet); returns mp3 bytes
+    from gtts import gTTS
+    text = text.split("**Sources:**")[0].split("\n---\n")[0]  # skip the source links and the repeated English part
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text).replace("**", "").replace("🚨", "")
+    audio = io.BytesIO()
+    gTTS(text, lang=lang).write_to_fp(audio)
+    return audio.getvalue()
+
+
 def fixed_message(key, english, lang):
     # safety messages use fixed translations; the 108 message is shown in both languages
     if lang == "en":
@@ -210,7 +228,7 @@ def get_response(question, sidebar_week, lang="en"):
     #                (red flag again, retrieval, answer, validator) -> translate the checked answer back
     start = time.perf_counter()
     metrics = {}
-    message = {"role": "assistant", "chunks": [], "metrics": metrics}
+    message = {"role": "assistant", "chunks": [], "metrics": metrics, "lang": lang}
 
     def finish(content, caption):
         metrics["total_s"] = time.perf_counter() - start
@@ -349,12 +367,18 @@ def show_metrics(message):
             st.markdown(message["english_answer"])
 
 
-def show_message(message):
+def show_message(message, i):
     with st.chat_message(message["role"], avatar=AVATARS[message["role"]]):
         if message.get("caption") == "Red-flag escalation":
             st.error(message["content"])  # the emergency message stays in a plain red box
         else:
             st.markdown(message["content"])
+        if message["role"] == "assistant" and st.button("🔊 Listen", key=f"listen_{i}"):
+            try:
+                st.audio(speak(message["content"], message.get("lang", "en")), format="audio/mp3", autoplay=True)
+            except Exception:
+                st.warning("Sorry, reading aloud is not available right now (it needs internet). "
+                           "The answer is written above. 🙏")
         level = message.get("metrics", {}).get("level")
         if level:
             st.badge(f"Confidence {message['metrics']['confidence']:.0f}% · {level}", color=BADGE_COLORS[level])
@@ -428,14 +452,24 @@ if __name__ == "__main__":
         with st.chat_message("assistant", avatar="🌸"):
             welcome = "Hello mom-to-be 💕 Ask me anything about your pregnancy."
             st.markdown(welcome if lang == "en" else LOCAL_MESSAGES[lang]["welcome"])
-        for message in st.session_state.messages:
-            show_message(message)
+        for i, message in enumerate(st.session_state.messages):
+            show_message(message, i)
 
-        if question := st.chat_input("Ask a question about your pregnancy"):
+        # voice question: only transcribe a recording once (streamlit reruns the script on every click)
+        voice = st.audio_input("🎤 Or ask by voice")
+        question = st.chat_input("Ask a question about your pregnancy")
+        if voice is not None and hash(voice.getvalue()) != st.session_state.get("last_voice"):
+            st.session_state.last_voice = hash(voice.getvalue())
+            try:
+                question = transcribe(voice.getvalue(), lang)
+            except Exception:
+                st.warning("Sorry, I couldn't hear that clearly. Please try again, or type your question. 🙏")
+
+        if question:
             st.session_state.messages.append({"role": "user", "content": question})
-            show_message(st.session_state.messages[-1])
+            show_message(st.session_state.messages[-1], len(st.session_state.messages) - 1)
 
             with st.spinner("Checking the guidelines..."):
                 message = get_response(question, sidebar_week, lang)
             st.session_state.messages.append(message)
-            show_message(message)
+            show_message(message, len(st.session_state.messages) - 1)
